@@ -60,7 +60,6 @@ fn key_pressed(app: &App, model: &mut Model, key: Key) {
             let path = assets.join("time.wav");
             let sound = audrey::open(path).expect("failed to load sound");
 
-            // Update the sample rate in the audio model
             model
                 .stream
                 .send(move |audio| {
@@ -135,7 +134,7 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
 
     let volume = *model.volume.lock().unwrap();
     let amplitude = if volume > 0.0 {
-        (volume.log(10.0) * 11.5).max(1.0).min(100.0)
+        (volume.log(10.0) * 14.5).max(1.0).min(100.0)
     } else {
         1.0
     };
@@ -152,14 +151,14 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
         let mut points = Vec::new();
         for i in 0..=num_points {
             let x = map_range(i, 0, num_points, -window_width / 2.0, window_width / 2.0);
-            let angle = (i as f32 * frequency * 2.0 * PI / num_points as f32) + (PI / 2.0); // Adding phase shift of PI/2
+            let angle = (i as f32 * frequency * 2.0 * PI / num_points as f32) + (PI / 2.0); 
             let y = amplitude * angle.sin();
             points.push(pt2(x, y));
         }
         model.string_points.push(points);
     }
 
-    let spectral_flux_frames: usize = 7; // Number of past frames to average
+    let spectral_flux_frames: usize = 10; // Number of past frames to average
     model.past_spectral_flux.push(spectral_flux);
     if model.past_spectral_flux.len() > spectral_flux_frames {
         model.past_spectral_flux.remove(0);
@@ -169,24 +168,24 @@ fn update(_app: &App, model: &mut Model, _update: Update) {
         model.past_spectral_flux.iter().sum::<f32>() / model.past_spectral_flux.len() as f32;
 
     let mut target_circle_radius = 50.0;
-    let beat_detection_threshold = 70.0;
-    const COOLDOWN_TIME: usize = 30;
+    let beat_detection_threshold = 165.0;
+    const COOLDOWN_TIME: usize = 160;
     if model.cooldown_counter == 0 {
         if avg_spectral_flux > beat_detection_threshold {
             model.hue = (model.hue + 0.3) % 1.0;
-            target_circle_radius = 100.0;
+            target_circle_radius = 300.0;
             model.cooldown_counter = COOLDOWN_TIME;
         }
     } else {
         model.cooldown_counter -= 1;
     }
 
-    const DECAY_FACTOR: f32 = 0.70;
+    const DECAY_FACTOR: f32 = 0.50;
 
     // Decay the target circle radius
     target_circle_radius *= DECAY_FACTOR;
 
-    const SMOOTHING_FACTOR: f32 = 0.50;
+    const SMOOTHING_FACTOR: f32 = 0.06;
 
     model.circle_radius = model.previous_circle_radius
         + (target_circle_radius - model.previous_circle_radius) * SMOOTHING_FACTOR;
@@ -209,7 +208,7 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
             for &point in points.iter() {
                 let x = point.x;
-                let y = point.y + position; // Adding the position to each y-coordinate for different string positions
+                let y = point.y + position; 
                 osc_points.push(pt2(x, y));
             }
 
@@ -217,7 +216,6 @@ fn view(app: &App, model: &Model, frame: Frame) {
         }
     }
 
-    //circle
     let circle_color = model.circle_color;
     draw.ellipse()
         .x_y(0.0, 150.0)
