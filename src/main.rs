@@ -57,7 +57,7 @@ fn key_pressed(app: &App, model: &mut Model, key: Key) {
     match key {
         Key::Space => {
             let assets = app.assets_path().expect("could not find assets directory");
-            let path = assets.join("etoile.wav");
+            let path = assets.join("time.wav");
             let sound = audrey::open(path).expect("failed to load sound");
 
             // Update the sample rate in the audio model
@@ -109,7 +109,7 @@ fn process_fft_output(fft_output: &[f32], prev_power_spectrum: &mut Vec<f32>) ->
     spectral_flux
 }
 
-fn update(app: &App, model: &mut Model, _update: Update) {
+fn update(_app: &App, model: &mut Model, _update: Update) {
     let fft_output_guard = model.fft_output.lock().unwrap();
 
     let mut fft_magnitudes: Vec<f32> = fft_output_guard.iter().map(|c| c.norm()).collect();
@@ -135,39 +135,31 @@ fn update(app: &App, model: &mut Model, _update: Update) {
 
     let volume = *model.volume.lock().unwrap();
     let amplitude = if volume > 0.0 {
-        (volume.log(10.0) * 8.5).max(1.0).min(100.0)
+        (volume.log(10.0) * 11.5).max(1.0).min(100.0)
     } else {
         1.0
     };
 
     let log_spectral_flux = (spectral_flux + 1.0).log(10.0);
+    let frequency_multiplier = log_spectral_flux.powf(2.0);
 
-    let frequency_multiplier = log_spectral_flux * 0.75;
+    let window_width = 2300.0;
+    let num_points = 2000;
+    let frequency = frequency_multiplier * 0.25; 
 
-    let base_circle_radius = 50.0;
-    let num_points = 1000;
-    let mut points = Vec::new();
-
-    const PHASE_SHIFT: f32 = 0.1; // Adjust this value to control the phase shift
-
-    for i in 0..=num_points {
-        // Notice the change here, including the end point
-        let angle = map_range(i, 0, num_points, 0.0, 2.0 * PI);
-        let shifted_angle = angle + PHASE_SHIFT; // Apply the phase shift
-        let offset = amplitude * (frequency_multiplier * shifted_angle).sin();
-        let radius = base_circle_radius + offset;
-        let x = radius * angle.cos();
-        let y = radius * angle.sin();
-        points.push(pt2(x, y));
+    model.string_points.clear();
+    for _ in 0..6 {
+        let mut points = Vec::new();
+        for i in 0..=num_points {
+            let x = map_range(i, 0, num_points, -window_width / 2.0, window_width / 2.0);
+            let angle = (i as f32 * frequency * 2.0 * PI / num_points as f32) + (PI / 2.0); // Adding phase shift of PI/2
+            let y = amplitude * angle.sin();
+            points.push(pt2(x, y));
+        }
+        model.string_points.push(points);
     }
 
-    model.string_points.push(points);
-
-    if model.cooldown_counter > 0 {
-        model.cooldown_counter -= 1;
-    }
-
-    let spectral_flux_frames: usize = 10; // Number of past frames to average
+    let spectral_flux_frames: usize = 7; // Number of past frames to average
     model.past_spectral_flux.push(spectral_flux);
     if model.past_spectral_flux.len() > spectral_flux_frames {
         model.past_spectral_flux.remove(0);
@@ -177,23 +169,19 @@ fn update(app: &App, model: &mut Model, _update: Update) {
         model.past_spectral_flux.iter().sum::<f32>() / model.past_spectral_flux.len() as f32;
 
     let mut target_circle_radius = 50.0;
-
-    let beat_detection_threshold = 110.0;
-
+    let beat_detection_threshold = 70.0;
     const COOLDOWN_TIME: usize = 30;
     if model.cooldown_counter == 0 {
         if avg_spectral_flux > beat_detection_threshold {
             model.hue = (model.hue + 0.3) % 1.0;
-            // Increase target_circle_radius further on the beat
             target_circle_radius = 100.0;
-
             model.cooldown_counter = COOLDOWN_TIME;
         }
     } else {
         model.cooldown_counter -= 1;
     }
 
-    const DECAY_FACTOR: f32 = 0.50;
+    const DECAY_FACTOR: f32 = 0.70;
 
     // Decay the target circle radius
     target_circle_radius *= DECAY_FACTOR;
@@ -210,37 +198,31 @@ fn view(app: &App, model: &Model, frame: Frame) {
     let draw = app.draw();
     draw.background().color(BLACK);
 
-    // Static circle
-    draw.ellipse()
-        .x_y(0.0, 0.0)
-        .radius(50.0)
-        .color(model.circle_color);
+    let line_color = model.circle_color;
 
-    // Oscillating circle
-    let mut expanded_points: Vec<Point2> = Vec::new();
-    let num_points = model.string_points[0].len(); // Get the number of points in a single frame
-    for i in 0..num_points {
-        let mut segment_points: Vec<Point2> = Vec::new();
-        for points in &model.string_points {
-            segment_points.push(points[i] * (model.circle_radius / 25.0)); // Scale points based on circle radius
+    let string_positions = [-90.0, -60.0, -30.0, 0.0, 30.0, 60.0];
+    for (index, &position) in string_positions.iter().enumerate() {
+        if index < model.string_points.len() {
+            let points = &model.string_points[index];
+
+            let mut osc_points = Vec::new();
+
+            for &point in points.iter() {
+                let x = point.x;
+                let y = point.y + position; // Adding the position to each y-coordinate for different string positions
+                osc_points.push(pt2(x, y));
+            }
+
+            draw.polyline().points(osc_points).color(line_color);
         }
-        expanded_points.extend(segment_points);
     }
 
-    if !expanded_points.is_empty() {
-        // Close the loop explicitly by drawing a line from the last point to the first point
-        draw.line()
-            .start(*expanded_points.last().unwrap())
-            .end(*expanded_points.first().unwrap())
-            .weight(3.0)
-            .color(model.circle_color);
-    }
-
-    draw.path()
-        .stroke()
-        .weight(3.0)
-        .points(expanded_points)
-        .color(model.circle_color);
+    //circle
+    let circle_color = model.circle_color;
+    draw.ellipse()
+        .x_y(0.0, 150.0)
+        .radius(model.circle_radius)
+        .color(circle_color);
 
     draw.to_frame(app, &frame).unwrap();
 }
