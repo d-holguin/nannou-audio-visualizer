@@ -27,6 +27,7 @@ struct Model {
     past_magnitudes: Vec<Vec<f32>>,
     past_spectral_flux: Vec<f32>,
     cooldown_counter: usize,
+    smoothed_flux: f32,
 }
 
 impl Model {
@@ -91,6 +92,7 @@ impl Model {
             past_magnitudes: vec![vec![0.0; 10]; 6],
             past_spectral_flux: Vec::new(),
             cooldown_counter: 0,
+            smoothed_flux: 0.0,
         }
     }
 
@@ -139,8 +141,12 @@ impl Model {
             model.string_points.push(points);
         }
 
-        let spectral_flux_frames = 10;
-        model.past_spectral_flux.push(spectral_flux);
+        const FLUX_SMOOTHING: f32 = 0.4;
+        model.smoothed_flux = model.smoothed_flux * (1.0 - FLUX_SMOOTHING)
+            + spectral_flux * FLUX_SMOOTHING;
+
+        let spectral_flux_frames = 20;
+        model.past_spectral_flux.push(model.smoothed_flux);
         if model.past_spectral_flux.len() > spectral_flux_frames {
             model.past_spectral_flux.remove(0);
         }
@@ -158,7 +164,7 @@ impl Model {
             variance.sqrt()
         };
 
-        let adaptive_threshold = mean_flux + std_dev_flux * 1.0; // Can tune multiplier
+        let adaptive_threshold = mean_flux + std_dev_flux * 1.5; // Can tune multiplier
 
 
         let mut target_circle_radius = model.previous_circle_radius;
@@ -168,7 +174,14 @@ impl Model {
         const BEAT_PULSE_RADIUS: f32 = 300.0;
 
         if model.cooldown_counter == 0 {
-            if spectral_flux > adaptive_threshold {
+
+            let last_flux = if flux_history.len() >= 2 {
+                flux_history[flux_history.len() - 2]
+            } else {
+                0.0
+            };
+            
+            if model.smoothed_flux > adaptive_threshold && model.smoothed_flux > last_flux {
                 model.hue = (model.hue + 0.3) % 1.0;
                 target_circle_radius = BEAT_PULSE_RADIUS;
                 model.cooldown_counter = COOLDOWN_TIME;
@@ -258,7 +271,7 @@ fn process_fft_output(fft_output: &[f32], prev_power_spectrum: &mut Vec<f32>) ->
 }
 
 /// Press space to pauce or play the stream
-fn controls(app: &App, model: &mut Model, key: Key) {
+fn controls(_app: &App, model: &mut Model, key: Key) {
     match key {
         Key::Space => {
             if model.stream.is_playing() {
