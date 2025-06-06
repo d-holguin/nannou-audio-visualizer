@@ -11,6 +11,39 @@ pub struct Audio {
     pub fft_output: Arc<Mutex<Vec<Complex<f32>>>>,
 }
 
+pub fn capture(audio: &mut Audio, buffer: &Buffer) {
+    let len_frames = buffer.len_frames();
+    let mut rms_volume = 0.0;
+
+    let mut input_samples: Vec<f32> = Vec::new();
+    for frame in buffer.frames() {
+        for &sample in frame.iter() {
+            input_samples.push(sample);
+            rms_volume += sample * sample;
+        }
+    }
+
+    let volume = (rms_volume / input_samples.len() as f32).sqrt() * 100.0;
+    *audio.volume.lock().unwrap() = volume;
+    audio.volume_sender.send(volume).ok();
+
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(input_samples.len());
+
+    let mut fft_input: Vec<Complex<f32>> = input_samples
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let window_value = 0.5 * (1.0 - (2.0 * PI * i as f32 / input_samples.len() as f32).cos());
+            Complex::new(s * window_value, 0.0)
+        })
+        .collect();
+
+    fft.process(&mut fft_input);
+
+    *audio.fft_output.lock().unwrap() = fft_input;
+}
+
 pub fn render(audio: &mut Audio, buffer: &mut Buffer) {
     let mut have_ended = vec![];
     let len_frames = buffer.len_frames();
