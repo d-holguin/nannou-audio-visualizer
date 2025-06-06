@@ -1,9 +1,6 @@
 use clap::builder::styling::AnsiColor;
 use clap::builder::Styles;
 use clap::{CommandFactory, FromArgMatches, Parser};
-use std::error::Error;
-use std::fmt::Display;
-use std::io::BufRead;
 use std::path::PathBuf;
 
 mod audio_processing;

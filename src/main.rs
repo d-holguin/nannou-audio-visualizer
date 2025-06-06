@@ -80,8 +80,8 @@ impl Model {
             hue: 0.0,
             string_points: Vec::new(),
             circle_radius: 0.0,
-            line_color: nannou::color::hsl(0.0, 0.0, 0.0).into(), // Setting initial color to black
-            circle_color: nannou::color::hsl(0.0, 0.0, 0.0).into(),
+            line_color: hsl(0.0, 0.0, 0.0).into(), // Setting initial color to black
+            circle_color: hsl(0.0, 0.0, 0.0).into(),
             prev_power_spectrum: Vec::new(),
             past_magnitudes: vec![vec![0.0; 10]; 6],
             past_spectral_flux: Vec::new(),
@@ -91,17 +91,13 @@ impl Model {
 
     fn update(_app: &App, model: &mut Model, _update: Update) {
         let fft_output_guard = model.fft_output.lock().unwrap();
-
         let mut fft_magnitudes: Vec<f32> = fft_output_guard.iter().map(|c| c.norm()).collect();
 
         let spectral_flux = process_fft_output(&fft_magnitudes, &mut model.prev_power_spectrum);
 
         let neon_hue = 0.6 + 0.3 * (model.hue / 1.0);
-
-        model.line_color = nannou::color::hsl(neon_hue, 1.0, 0.45).into();
-        model.circle_color = nannou::color::hsl(neon_hue, 1.0, 0.45).into();
-
-        model.string_points.clear();
+        model.line_color = hsl(neon_hue, 1.0, 0.45).into();
+        model.circle_color = hsl(neon_hue, 1.0, 0.45).into();
 
         const N: usize = 20;
         for (index, mag) in fft_magnitudes.iter_mut().enumerate() {
@@ -122,7 +118,6 @@ impl Model {
 
         let log_spectral_flux = (spectral_flux + 1.0).log(10.0);
         let frequency_multiplier = log_spectral_flux.powf(2.0);
-
         let window_width = 2300.0;
         let num_points = 2000;
         let frequency = frequency_multiplier * 0.25;
@@ -139,33 +134,46 @@ impl Model {
             model.string_points.push(points);
         }
 
-        let spectral_flux_frames: usize = 10; // Number of past frames to average
+        let spectral_flux_frames = 10;
         model.past_spectral_flux.push(spectral_flux);
         if model.past_spectral_flux.len() > spectral_flux_frames {
             model.past_spectral_flux.remove(0);
         }
 
-        let avg_spectral_flux =
-            model.past_spectral_flux.iter().sum::<f32>() / model.past_spectral_flux.len() as f32;
+        let flux_history = &model.past_spectral_flux;
+        let avg_flux = flux_history.iter().sum::<f32>() / flux_history.len() as f32;
+        //let sensitivity = 1.3;
+        let mean_flux = avg_flux;
+        let std_dev_flux = {
+            let variance = flux_history
+                .iter()
+                .map(|v| (v - mean_flux).powi(2))
+                .sum::<f32>()
+                / flux_history.len() as f32;
+            variance.sqrt()
+        };
 
-        let mut target_circle_radius = 50.0;
-        let beat_detection_threshold = 165.0;
-        const COOLDOWN_TIME: usize = 160;
+        let adaptive_threshold = mean_flux + std_dev_flux * 1.0; // Can tune multiplier
+
+
+        let mut target_circle_radius = model.previous_circle_radius;
+
+        const COOLDOWN_TIME: usize = 40;
+        const BASE_RADIUS: f32 = 50.0;
+        const BEAT_PULSE_RADIUS: f32 = 300.0;
+
         if model.cooldown_counter == 0 {
-            if avg_spectral_flux > beat_detection_threshold {
+            if spectral_flux > adaptive_threshold {
                 model.hue = (model.hue + 0.3) % 1.0;
-                target_circle_radius = 300.0;
+                target_circle_radius = BEAT_PULSE_RADIUS;
                 model.cooldown_counter = COOLDOWN_TIME;
             }
         } else {
             model.cooldown_counter -= 1;
         }
 
-        const DECAY_FACTOR: f32 = 0.50;
-
-        // Decay the target circle radius
-        target_circle_radius *= DECAY_FACTOR;
-
+        // Smooth decay toward base radius
+        target_circle_radius = lerp(target_circle_radius, BASE_RADIUS, 0.08);
         const SMOOTHING_FACTOR: f32 = 0.06;
 
         model.circle_radius = model.previous_circle_radius
@@ -173,6 +181,7 @@ impl Model {
 
         model.previous_circle_radius = model.circle_radius;
     }
+
 
     fn view(app: &App, model: &Model, frame: Frame) {
         let draw = app.draw();
@@ -217,16 +226,19 @@ fn list_input_devices() {
 }
 
 fn process_fft_output(fft_output: &[f32], prev_power_spectrum: &mut Vec<f32>) -> f32 {
-    let mut power_spectrum = Vec::new();
-    let mut spectral_flux = 0.0;
+    let num_bins = fft_output.len();
+    let low_bin_cutoff = (num_bins as f32 * 0.1) as usize; // Lower 10% of spectrum
 
-    for &value in fft_output {
-        let power = value * value;
-        power_spectrum.push(power);
+    let mut spectral_flux = 0.0;
+    let mut power_spectrum = vec![0.0; num_bins];
+
+    for i in 0..num_bins {
+        let power = fft_output[i] * fft_output[i];
+        power_spectrum[i] = power;
     }
 
     if !prev_power_spectrum.is_empty() {
-        for i in 0..power_spectrum.len() {
+        for i in 0..low_bin_cutoff {
             let flux = power_spectrum[i] - prev_power_spectrum[i];
             if flux > 0.0 {
                 spectral_flux += flux;
@@ -237,4 +249,10 @@ fn process_fft_output(fft_output: &[f32], prev_power_spectrum: &mut Vec<f32>) ->
     *prev_power_spectrum = power_spectrum;
 
     spectral_flux
+}
+
+
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
 }
