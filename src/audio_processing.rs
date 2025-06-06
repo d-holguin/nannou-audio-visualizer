@@ -9,6 +9,7 @@ pub struct Audio {
     pub volume_sender: std::sync::mpsc::Sender<f32>,
     pub volume: Arc<Mutex<f32>>,
     pub fft_output: Arc<Mutex<Vec<Complex<f32>>>>,
+    pub file_sample_rate: Option<u32>,
 }
 
 fn compute_rms(samples: &[f32]) -> f32 {

@@ -7,17 +7,18 @@ use rustfft::num_complex::Complex;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
+const THRESHOLD_MULTIPLIER: f32 = 2.0;
+const SPECTRAL_FLUX_FRAMES: usize = 30;
+const COOLDOWN_TIME: usize = 20;
+
 fn main() {
-    nannou::app(Model::new)
-        .update(Model::update)
-        .run();
+    nannou::app(Model::new).update(Model::update).run();
 }
 
 struct Model {
     stream: audio::Stream<Audio>,
     volume: Arc<Mutex<f32>>,
     fft_output: Arc<Mutex<Vec<Complex<f32>>>>,
-    previous_circle_radius: f32,
     hue: f32,
     string_points: Vec<Vec<Point2>>,
     circle_radius: f32,
@@ -28,6 +29,7 @@ struct Model {
     past_spectral_flux: Vec<f32>,
     cooldown_counter: usize,
     smoothed_flux: f32,
+    circle_velocity: f32,
 }
 
 impl Model {
@@ -37,7 +39,8 @@ impl Model {
         app.new_window()
             .view(Model::view)
             .key_pressed(controls)
-            .build().unwrap();
+            .build()
+            .unwrap();
 
         let audio_host = audio::Host::new();
         let fft_output = Arc::new(Mutex::new(vec![]));
@@ -49,12 +52,16 @@ impl Model {
             fft_output: Arc::clone(&fft_output),
             volume: Arc::clone(&volume),
             sounds: vec![],
+            file_sample_rate: None,
         };
 
         let stream = match config {
             Some(config) => {
                 // Play audio file mode
                 let reader = audrey::open(&config.input_file).expect("failed to open audio file");
+                let sample_rate = reader.description().sample_rate();
+                audio_model.file_sample_rate = Some(sample_rate);
+                println!("Audio sample rate: {}", sample_rate);
                 audio_model.sounds.push(reader);
 
                 audio_host
@@ -66,7 +73,7 @@ impl Model {
             None => {
                 // Live input fallback
                 println!("No input file provided, using live input");
-                list_input_devices(); // for debugging
+                list_input_devices();
 
                 audio_host
                     .new_input_stream(audio_model)
@@ -82,7 +89,6 @@ impl Model {
             stream,
             volume,
             fft_output,
-            previous_circle_radius: 50.0,
             hue: 0.0,
             string_points: Vec::new(),
             circle_radius: 0.0,
@@ -93,6 +99,7 @@ impl Model {
             past_spectral_flux: Vec::new(),
             cooldown_counter: 0,
             smoothed_flux: 0.0,
+            circle_velocity: 0.0,
         }
     }
 
@@ -118,7 +125,7 @@ impl Model {
 
         let volume = *model.volume.lock().unwrap();
         let amplitude = if volume > 0.0 {
-            (volume.log(10.0) * 14.5).max(1.0).min(100.0)
+            (volume.log(10.0) * 14.5).clamp(1.0, 100.0)
         } else {
             1.0
         };
@@ -142,12 +149,11 @@ impl Model {
         }
 
         const FLUX_SMOOTHING: f32 = 0.4;
-        model.smoothed_flux = model.smoothed_flux * (1.0 - FLUX_SMOOTHING)
-            + spectral_flux * FLUX_SMOOTHING;
+        model.smoothed_flux =
+            model.smoothed_flux * (1.0 - FLUX_SMOOTHING) + spectral_flux * FLUX_SMOOTHING;
 
-        let spectral_flux_frames = 20;
         model.past_spectral_flux.push(model.smoothed_flux);
-        if model.past_spectral_flux.len() > spectral_flux_frames {
+        if model.past_spectral_flux.len() > SPECTRAL_FLUX_FRAMES {
             model.past_spectral_flux.remove(0);
         }
 
@@ -164,43 +170,39 @@ impl Model {
             variance.sqrt()
         };
 
-        let adaptive_threshold = mean_flux + std_dev_flux * 1.5; // Can tune multiplier
+        let adaptive_threshold = mean_flux + std_dev_flux * THRESHOLD_MULTIPLIER;
 
-
-        let mut target_circle_radius = model.previous_circle_radius;
-
-        const COOLDOWN_TIME: usize = 40;
         const BASE_RADIUS: f32 = 50.0;
-        const BEAT_PULSE_RADIUS: f32 = 300.0;
 
         if model.cooldown_counter == 0 {
-
             let last_flux = if flux_history.len() >= 2 {
                 flux_history[flux_history.len() - 2]
             } else {
                 0.0
             };
-            
+
             if model.smoothed_flux > adaptive_threshold && model.smoothed_flux > last_flux {
                 model.hue = (model.hue + 0.3) % 1.0;
-                target_circle_radius = BEAT_PULSE_RADIUS;
+                let beat_strength = (model.smoothed_flux - adaptive_threshold).clamp(0.0, 1.0);
+                model.circle_velocity += 20.0 * beat_strength;
                 model.cooldown_counter = COOLDOWN_TIME;
             }
         } else {
             model.cooldown_counter -= 1;
         }
 
-        // Smooth decay toward base radius
-        target_circle_radius = lerp(target_circle_radius, BASE_RADIUS, 0.08);
-        const SMOOTHING_FACTOR: f32 = 0.06;
+        // Spring dynamics
+        let target = BASE_RADIUS;
+        let stiffness = 0.08; // how fast it returns to target
+        let damping = 0.4; // how much velocity is absorbed
 
-        model.circle_radius = model.previous_circle_radius
-            + (target_circle_radius - model.previous_circle_radius) * SMOOTHING_FACTOR;
+        let displacement = model.circle_radius - target;
+        model.circle_velocity -= displacement * stiffness;
+        model.circle_velocity *= 1.0 - damping;
 
-        model.previous_circle_radius = model.circle_radius;
-        
+        model.circle_radius += model.circle_velocity;
+        model.circle_radius = model.circle_radius.clamp(50.0, 180.0);
     }
-
 
     fn view(app: &App, model: &Model, frame: Frame) {
         let draw = app.draw();
@@ -208,21 +210,56 @@ impl Model {
 
         let line_color = model.circle_color;
 
-        let string_positions = [-90.0, -60.0, -30.0, 0.0, 30.0, 60.0];
+        let base_y = 210.0; // controls vertical center
+        let spacing = 30.0;
+        let string_positions: Vec<f32> = (-3..=2).map(|i| base_y + i as f32 * spacing).collect();
+
         for (index, &position) in string_positions.iter().enumerate() {
             if index < model.string_points.len() {
                 let points = &model.string_points[index];
-
-                let mut osc_points = Vec::new();
-
-                for &point in points.iter() {
-                    let x = point.x;
-                    let y = point.y + position;
-                    osc_points.push(pt2(x, y));
-                }
-
+                let osc_points: Vec<_> = points.iter().map(|&p| pt2(p.x, p.y + position)).collect();
                 draw.polyline().points(osc_points).color(line_color);
             }
+        }
+
+        let horizon_y = 100.0;
+        let grid_depth = 400.0;
+        let grid_width = 800.0;
+        let vertical_lines = 20;
+        let horizontal_lines = 30;
+
+        let audio_amplitude = model.circle_radius / 300.0;
+        let wave_freq = 4.0;
+        let wave_amp = 40.0 * audio_amplitude;
+
+        // Vertical lines (static perspective lines)
+        for i in -vertical_lines..=vertical_lines {
+            let x = i as f32 * 40.0;
+            let t = (i + vertical_lines) as f32 / (2.0 * vertical_lines as f32);
+            let color = hsl(model.hue + t * 0.1, 1.0, 0.6 + 0.2 * t);
+            draw.line()
+                .start(pt2(x, -grid_depth))
+                .end(pt2(0.0, horizon_y))
+                .color(color);
+        }
+
+        // Horizontal lines with wave distortion
+        for i in 0..=horizontal_lines {
+            let z = i as f32 / horizontal_lines as f32;
+            let y = -grid_depth + z * (grid_depth + horizon_y);
+            let half_w = grid_width * (1.0 - z);
+
+            let mut points = Vec::new();
+            let segments = 100;
+
+            for j in 0..=segments {
+                let t = j as f32 / segments as f32;
+                let x = lerp(-half_w, half_w, t);
+                let offset = (x * wave_freq * 0.01 + model.hue * TAU).sin() * wave_amp * (1.0 - z);
+                points.push(pt2(x, y + offset));
+            }
+            let color = hsl(model.hue + z * 0.1, 1.0, 0.55 + 0.25 * z);
+            draw.polyline().points(points).color(color);
         }
 
         let circle_color = model.circle_color;
@@ -231,7 +268,19 @@ impl Model {
             .radius(model.circle_radius)
             .color(circle_color);
 
+        draw_synthwave_sun(&draw, pt2(0.0, 150.0), model.circle_radius, model.hue);
+
         draw.to_frame(app, &frame).unwrap();
+    }
+}
+
+fn draw_synthwave_sun(draw: &Draw, center: Point2, radius: f32, hue: f32) {
+    let layers = 20;
+    for i in 0..layers {
+        let t = i as f32 / (layers - 1) as f32;
+        let layer_radius = radius * (1.0 - t * 0.05);
+        let color = hsl(hue + t * 0.1, 1.0, 0.55 + 0.25 * t);
+        draw.ellipse().xy(center).radius(layer_radius).color(color);
     }
 }
 
@@ -272,19 +321,14 @@ fn process_fft_output(fft_output: &[f32], prev_power_spectrum: &mut Vec<f32>) ->
 
 /// Press space to pauce or play the stream
 fn controls(_app: &App, model: &mut Model, key: Key) {
-    match key {
-        Key::Space => {
-            if model.stream.is_playing() {
-                model.stream.pause().expect("Failed to pause audio stream");
-            } else {
-                model.stream.play().expect("Failed to play audio stream");
-            }
+    if key == Key::Space {
+        if model.stream.is_playing() {
+            model.stream.pause().expect("Failed to pause audio stream");
+        } else {
+            model.stream.play().expect("Failed to play audio stream");
         }
-        _ => {}
     }
 }
-
-
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
