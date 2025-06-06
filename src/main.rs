@@ -103,7 +103,9 @@ impl Model {
         }
     }
 
-    fn update(_app: &App, model: &mut Model, _update: Update) {
+    fn update(_app: &App, model: &mut Model, update: Update) {
+        
+        let dt = update.since_last.as_secs_f32();
         let fft_output_guard = model.fft_output.lock().unwrap();
         let mut fft_magnitudes: Vec<f32> = fft_output_guard.iter().map(|c| c.norm()).collect();
 
