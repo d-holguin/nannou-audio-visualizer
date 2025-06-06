@@ -8,7 +8,9 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
 fn main() {
-    nannou::app(Model::new).update(Model::update).run();
+    nannou::app(Model::new)
+        .update(Model::update)
+        .run();
 }
 
 struct Model {
@@ -31,7 +33,10 @@ impl Model {
     fn new(app: &App) -> Self {
         let config = Args::parse().ok();
 
-        app.new_window().view(Model::view).build().unwrap();
+        app.new_window()
+            .view(Model::view)
+            .key_pressed(controls)
+            .build().unwrap();
 
         let audio_host = audio::Host::new();
         let fft_output = Arc::new(Mutex::new(vec![]));
@@ -180,6 +185,7 @@ impl Model {
             + (target_circle_radius - model.previous_circle_radius) * SMOOTHING_FACTOR;
 
         model.previous_circle_radius = model.circle_radius;
+        
     }
 
 
@@ -249,6 +255,20 @@ fn process_fft_output(fft_output: &[f32], prev_power_spectrum: &mut Vec<f32>) ->
     *prev_power_spectrum = power_spectrum;
 
     spectral_flux
+}
+
+/// Press space to pauce or play the stream
+fn controls(app: &App, model: &mut Model, key: Key) {
+    match key {
+        Key::Space => {
+            if model.stream.is_playing() {
+                model.stream.pause().expect("Failed to pause audio stream");
+            } else {
+                model.stream.play().expect("Failed to play audio stream");
+            }
+        }
+        _ => {}
+    }
 }
 
 
