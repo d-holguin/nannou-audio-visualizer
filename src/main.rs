@@ -8,12 +8,14 @@ use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use nannou::noise::{NoiseFn, Perlin};
 
-const THRESHOLD_MULTIPLIER: f32 = 0.5;
-const SPECTRAL_FLUX_FRAMES: usize = 30;
-const COOLDOWN_TIME: f32 = 0.33;
+const THRESHOLD_MULTIPLIER: f32 = 1.1;
+const SPECTRAL_FLUX_FRAMES: usize = 10;
+const COOLDOWN_TIME: f32 = 0.35;
 const BASE_RADIUS: f32 = 50.0;
 const RADIUS_MULTIPLIER: f32 = 1.75;
-
+const FLUX_SMOOTHING: f32 = 0.6;
+const DEBUG_BEATS: bool = false;
+const TRIGGER: f32 = 1250.0;
 
 fn main() {
     nannou::app(Model::new).update(Model::update).run();
@@ -114,17 +116,97 @@ impl Model {
     fn update(_app: &App, model: &mut Model, update: Update) {
         let dt = update.since_last.as_secs_f32().min(1.0 / 30.0);
         model.cooldown_counter = (model.cooldown_counter - dt).max(0.0);
+
+        // Get FFT magnitudes
         let fft_output_guard = model.fft_output.lock().unwrap();
         let mut fft_magnitudes: Vec<f32> = fft_output_guard.iter().map(|c| c.norm()).collect();
-
         let spectral_flux = process_fft_output(&fft_magnitudes, &mut model.prev_power_spectrum);
 
+        // Smooth fluh
+        let smoothing = (FLUX_SMOOTHING * dt * 60.0).min(1.0);
+        model.smoothed_flux = model.smoothed_flux * (1.0 - smoothing) + spectral_flux * smoothing;
 
 
+        if DEBUG_BEATS {
+            println!(
+                "[Beat Check] raw_flux {:.2} | smooth {:.2} | delta {:.2} | cooldown {:.2}",
+                spectral_flux,
+                model.smoothed_flux,
+                spectral_flux - model.smoothed_flux,
+                model.cooldown_counter
+            );
+        }
+
+
+
+        // Track flux history
+        model.past_spectral_flux.push(spectral_flux);
+        if model.past_spectral_flux.len() > SPECTRAL_FLUX_FRAMES {
+            model.past_spectral_flux.remove(0);
+        }
+
+        let flux_history = &model.past_spectral_flux;
+        let mean_flux = flux_history.iter().sum::<f32>() / flux_history.len() as f32;
+        let std_dev_flux = {
+            let variance = flux_history
+                .iter()
+                .map(|v| (v - mean_flux).powi(2))
+                .sum::<f32>() / flux_history.len() as f32;
+            variance.sqrt()
+        };
+        let adaptive_threshold = mean_flux + std_dev_flux * THRESHOLD_MULTIPLIER;
+
+        let last = flux_history.len().saturating_sub(2);
+        let is_peak = flux_history[last] > *flux_history.get(last.wrapping_sub(1)).unwrap_or(&0.0)
+            && flux_history[last] > *flux_history.get(last + 1).unwrap_or(&0.0);
+
+
+        // Trigger beat
+        const MIN_REST_FLUX: f32 = 5.0;
+        const MIN_POP_SEPARATION: f32 = 0.2;
+        const POP_DURATION: f32 = 0.20;
+        let pop_peak = BASE_RADIUS * RADIUS_MULTIPLIER;
+
+        if model.smoothed_flux < MIN_REST_FLUX {
+            model.can_trigger = true;
+        }
+        let volume = *model.volume.lock().unwrap();
+        let dynamic_margin = 0.3 * model.smoothed_flux;
+        if model.cooldown_counter <= 0.0
+            && spectral_flux > model.smoothed_flux + dynamic_margin
+            && spectral_flux > TRIGGER
+            && volume > 0.05
+        {
+            if DEBUG_BEATS {
+                println!("*** BEAT TRIGGERED *** flux {:.1} delta {:.1}", spectral_flux, spectral_flux - model.smoothed_flux);
+            }
+
+            model.hue = (model.hue + 0.3) % 1.0;
+            model.pulse_timer = 0.20;
+            model.pulse_active = true;
+            model.cooldown_counter = COOLDOWN_TIME;
+        }
+
+        // Pulse animation
+        if model.pulse_active {
+            model.pulse_timer = (model.pulse_timer - dt).max(0.0);
+            let t = 1.0 - (model.pulse_timer / POP_DURATION).clamp(0.0, 1.0);
+            let scale = if t < 0.5 { 2.0 * t } else { 2.0 * (1.0 - t) };
+            model.circle_radius = BASE_RADIUS + scale * (pop_peak - BASE_RADIUS);
+
+            if model.pulse_timer <= 0.0 {
+                model.pulse_active = false;
+                model.circle_radius = BASE_RADIUS;
+                model.pulse_timer = 0.0;
+            }
+        }
+
+        // Visuals
         let neon_hue = 0.6 + 0.3 * (model.hue / 1.0);
         model.line_color = hsl(neon_hue, 1.0, 0.45).into();
         model.circle_color = hsl(neon_hue, 1.0, 0.45).into();
 
+        // String generation
         const N: usize = 20;
         for (index, mag) in fft_magnitudes.iter_mut().enumerate() {
             let past_mags = &mut model.past_magnitudes[index % 6];
@@ -142,8 +224,8 @@ impl Model {
             1.0
         };
 
-        let log_spectral_flux = (spectral_flux + 1.0).log(10.0);
-        let frequency_multiplier = log_spectral_flux.powf(2.0);
+        let log_flux = (spectral_flux + 1.0).log(10.0);
+        let frequency_multiplier = log_flux.powf(2.0);
         let window_width = 2300.0;
         let num_points = 2000;
         let frequency = frequency_multiplier * 0.25;
@@ -160,85 +242,9 @@ impl Model {
             model.string_points.push(points);
         }
 
-        // base smoothing factors at 60fps
-        const FLUX_SMOOTHING: f32 = 0.4;
-        let smoothing = (FLUX_SMOOTHING * dt * 60.0).min(1.0);
-        model.smoothed_flux = model.smoothed_flux * (1.0 - smoothing) + spectral_flux * smoothing;
 
-        model.past_spectral_flux.push(model.smoothed_flux);
-        if model.past_spectral_flux.len() > SPECTRAL_FLUX_FRAMES {
-            model.past_spectral_flux.remove(0);
-        }
-
-        let flux_history = &model.past_spectral_flux;
-        let avg_flux = flux_history.iter().sum::<f32>() / flux_history.len() as f32;
-        //let sensitivity = 1.3;
-        let mean_flux = avg_flux;
-        let std_dev_flux = {
-            let variance = flux_history
-                .iter()
-                .map(|v| (v - mean_flux).powi(2))
-                .sum::<f32>()
-                / flux_history.len() as f32;
-            variance.sqrt()
-        };
-
-        let adaptive_threshold = mean_flux + std_dev_flux * THRESHOLD_MULTIPLIER;
-
-
-        let pop_duration = 0.20; // seconds
-        let pop_peak = BASE_RADIUS * RADIUS_MULTIPLIER;
-
-        let last_flux = if flux_history.len() >= 2 {
-            flux_history[flux_history.len() - 2]
-        } else {
-            0.0
-        };
-
-        // Reset can_trigger only when flux drops below rest threshold
-        const MIN_REST_FLUX: f32 = 10.0; // You can tweak this
-        if model.smoothed_flux < MIN_REST_FLUX {
-            model.can_trigger = true;
-        }
-
-        const MIN_POP_SEPARATION: f32 = 0.2;
-        if model.cooldown_counter <= 0.0
-            && model.can_trigger
-            && !model.pulse_active
-            && model.smoothed_flux > adaptive_threshold
-            && model.smoothed_flux > last_flux
-        {
-            model.hue = (model.hue + 0.3) % 1.0;
-            model.pulse_timer = pop_duration;
-            model.pulse_active = true;
-            model.cooldown_counter = COOLDOWN_TIME + MIN_POP_SEPARATION;
-            model.can_trigger = false;
-        }
-
-
-
-        if model.pulse_active {
-            model.pulse_timer = (model.pulse_timer - dt).max(0.0);
-
-            let t = 1.0 - (model.pulse_timer / pop_duration).clamp(0.0, 1.0);
-            // Quadratic ease out then in looks like a pop
-            let scale = if t < 0.5 {
-                2.0 * t
-            } else {
-                2.0 * (1.0 - t)
-            };
-
-            model.circle_radius = BASE_RADIUS + scale * (pop_peak - BASE_RADIUS);
-
-            if model.pulse_timer <= 0.0 {
-                model.pulse_active = false;
-                model.circle_radius = BASE_RADIUS;
-                model.pulse_timer = 0.0;
-            }
-        }
-
-            // println!("dt: {:.5}, cooldown: {:.5}, pulse_timer: {:.5}", dt, model.cooldown_counter, model.pulse_timer);
     }
+
 
     fn view(app: &App, model: &Model, frame: Frame) {
         let draw = app.draw();
@@ -263,7 +269,7 @@ impl Model {
         let grid_width = 800.0;
         let vertical_lines = 20;
         let horizontal_lines = 30;
-        
+
         let audio_amplitude = model.circle_radius / 300.0;
         let wave_freq = 4.0;
         let wave_amp = 50.0 * audio_amplitude;
@@ -350,31 +356,54 @@ fn list_input_devices() {
     }
 }
 
-fn process_fft_output(fft_output: &[f32], prev_power_spectrum: &mut Vec<f32>) -> f32 {
+fn process_fft_output(
+    fft_output: &[f32],
+    prev_power_spectrum: &mut Vec<f32>,
+) -> f32 {
     let num_bins = fft_output.len();
-    let low_bin_cutoff = (num_bins as f32 * 0.1) as usize; // Lower 10% of spectrum
 
-    let mut spectral_flux = 0.0;
+    let sample_rate = 44100.0;
+    let bin_width = sample_rate / num_bins as f32;
+
+    // Kick: 30–100 Hz
+    let low_start = (30.0 / bin_width).round() as usize;
+    let low_end = (100.0 / bin_width).round() as usize;
+
+    // Snare/mid: 100–500 Hz
+    let mid_start = (100.0 / bin_width).round() as usize;
+    let mid_end = (500.0 / bin_width).round() as usize;
+
+    // High clicky stuff (hi-hats, claps): 500–3000 Hz
+    let high_start = (500.0 / bin_width).round() as usize;
+    let high_end = (3000.0 / bin_width).round() as usize;
+
     let mut power_spectrum = vec![0.0; num_bins];
-
     for i in 0..num_bins {
-        let power = fft_output[i] * fft_output[i];
-        power_spectrum[i] = power;
+        power_spectrum[i] = fft_output[i] * fft_output[i];
     }
 
+    let mut flux = 0.0;
+
     if !prev_power_spectrum.is_empty() {
-        for i in 0..low_bin_cutoff {
-            let flux = power_spectrum[i] - prev_power_spectrum[i];
-            if flux > 0.0 {
-                spectral_flux += flux;
+        for &(start, end, weight) in &[
+            (low_start, low_end, 1.0),     // bass: strong weight
+            (mid_start, mid_end, 1.2),     // mid: medium weight
+            (high_start, high_end, 0.3),   // high: light weight
+        ] {
+            for i in start..=end.min(num_bins - 1) {
+                let diff = power_spectrum[i] - prev_power_spectrum[i];
+                if diff > 0.0 {
+                    flux += diff * weight;
+                }
             }
         }
     }
 
     *prev_power_spectrum = power_spectrum;
 
-    spectral_flux
+    flux
 }
+
 
 /// Press space to pauce or play the stream
 fn controls(_app: &App, model: &mut Model, key: Key) {
