@@ -1,17 +1,17 @@
 # Rust Audio Visualizer
 
-Simple Audio Visualizer I tried to hobble together. 
+This is a real-time audio visualizer I threw together in Rust using Nannou, rustfft, and Audrey. It does basic beat detection using spectral flux and reacts to both volume and frequency.
+
+You can feed it an audio file or let it run off live input.
+
+I tried to make the strings respond more to string-like tones, and the synthwave sun pulse with kicks and snares.
+
+It’s not rhythmically perfect, but the visual pulse holds up.
+
+Some audio files (like the example song) are sampled at 44100 Hz, but Nannou expects 48000 Hz by default — so playback might be slightly faster unless adjusted.
 
 
-This is more visually reactive rather than rhythmically aware. Some songs would benefit from adjusting some constants.
-
-When playing an audio file because audio is sampled at 4800hz by default some files such as the example might play at another sample rate like `44100hz` which plays slightly faster. 
-
-
-
-Watch the demo video below:
-
-[![Rust Audio Visualizer Demo]()]()
+[![Rust Audio Visualizer Demo](https://img.youtube.com/vi/BI1evQ_j3Bs/0.jpg)](https://youtu.be/BI1evQ_j3Bs)
 
 
 
