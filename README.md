@@ -8,14 +8,16 @@ I tried to make the strings respond more to string-like tones, and the synthwave
 
 It’s not rhythmically perfect, but the visual pulse holds up.
 
-Some audio files (like the example song) are sampled at 44100 Hz, but Nannou expects 48000 Hz by default — so playback might be slightly faster unless adjusted.
+Some audio files (like the example song) are sampled at 44100 Hz, but Nannou expects 48000 Hz by default, so playback might be slightly faster unless adjusted.
 
+
+### Youtube Demo Below
 
 [![Rust Audio Visualizer Demo](https://img.youtube.com/vi/BI1evQ_j3Bs/0.jpg)](https://youtu.be/BI1evQ_j3Bs)
 
 
 
 
-## Acknowledgments
+#### Acknowledgments
 
 - Music in the demo video: "On the Run" by Timecop1983
