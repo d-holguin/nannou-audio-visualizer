@@ -6,10 +6,14 @@ use nannou_audio::cpal::traits::{DeviceTrait, HostTrait};
 use rustfft::num_complex::Complex;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
+use nannou::noise::{NoiseFn, Perlin};
 
-const THRESHOLD_MULTIPLIER: f32 = 2.0;
+const THRESHOLD_MULTIPLIER: f32 = 0.5;
 const SPECTRAL_FLUX_FRAMES: usize = 30;
-const COOLDOWN_TIME: usize = 20;
+const COOLDOWN_TIME: f32 = 0.33;
+const BASE_RADIUS: f32 = 50.0;
+const RADIUS_MULTIPLIER: f32 = 1.75;
+
 
 fn main() {
     nannou::app(Model::new).update(Model::update).run();
@@ -27,9 +31,11 @@ struct Model {
     prev_power_spectrum: Vec<f32>,
     past_magnitudes: Vec<Vec<f32>>,
     past_spectral_flux: Vec<f32>,
-    cooldown_counter: usize,
+    cooldown_counter: f32,
     smoothed_flux: f32,
-    circle_velocity: f32,
+    pulse_timer: f32,
+    pulse_active: bool,
+    can_trigger: bool,
 }
 
 impl Model {
@@ -91,25 +97,29 @@ impl Model {
             fft_output,
             hue: 0.0,
             string_points: Vec::new(),
-            circle_radius: 0.0,
+            circle_radius: BASE_RADIUS,
             line_color: hsl(0.0, 0.0, 0.0).into(), // Setting initial color to black
             circle_color: hsl(0.0, 0.0, 0.0).into(),
             prev_power_spectrum: Vec::new(),
             past_magnitudes: vec![vec![0.0; 10]; 6],
             past_spectral_flux: Vec::new(),
-            cooldown_counter: 0,
+            cooldown_counter: 0.0,
             smoothed_flux: 0.0,
-            circle_velocity: 0.0,
+            pulse_timer: 0.0,
+            pulse_active: false,
+            can_trigger: true,
         }
     }
 
     fn update(_app: &App, model: &mut Model, update: Update) {
-        
-        let dt = update.since_last.as_secs_f32();
+        let dt = update.since_last.as_secs_f32().min(1.0 / 30.0);
+        model.cooldown_counter = (model.cooldown_counter - dt).max(0.0);
         let fft_output_guard = model.fft_output.lock().unwrap();
         let mut fft_magnitudes: Vec<f32> = fft_output_guard.iter().map(|c| c.norm()).collect();
 
         let spectral_flux = process_fft_output(&fft_magnitudes, &mut model.prev_power_spectrum);
+
+
 
         let neon_hue = 0.6 + 0.3 * (model.hue / 1.0);
         model.line_color = hsl(neon_hue, 1.0, 0.45).into();
@@ -150,9 +160,10 @@ impl Model {
             model.string_points.push(points);
         }
 
+        // base smoothing factors at 60fps
         const FLUX_SMOOTHING: f32 = 0.4;
-        model.smoothed_flux =
-            model.smoothed_flux * (1.0 - FLUX_SMOOTHING) + spectral_flux * FLUX_SMOOTHING;
+        let smoothing = (FLUX_SMOOTHING * dt * 60.0).min(1.0);
+        model.smoothed_flux = model.smoothed_flux * (1.0 - smoothing) + spectral_flux * smoothing;
 
         model.past_spectral_flux.push(model.smoothed_flux);
         if model.past_spectral_flux.len() > SPECTRAL_FLUX_FRAMES {
@@ -174,36 +185,59 @@ impl Model {
 
         let adaptive_threshold = mean_flux + std_dev_flux * THRESHOLD_MULTIPLIER;
 
-        const BASE_RADIUS: f32 = 50.0;
 
-        if model.cooldown_counter == 0 {
-            let last_flux = if flux_history.len() >= 2 {
-                flux_history[flux_history.len() - 2]
-            } else {
-                0.0
-            };
+        let pop_duration = 0.20; // seconds
+        let pop_peak = BASE_RADIUS * RADIUS_MULTIPLIER;
 
-            if model.smoothed_flux > adaptive_threshold && model.smoothed_flux > last_flux {
-                model.hue = (model.hue + 0.3) % 1.0;
-                let beat_strength = (model.smoothed_flux - adaptive_threshold).clamp(0.0, 1.0);
-                model.circle_velocity += 20.0 * beat_strength;
-                model.cooldown_counter = COOLDOWN_TIME;
-            }
+        let last_flux = if flux_history.len() >= 2 {
+            flux_history[flux_history.len() - 2]
         } else {
-            model.cooldown_counter -= 1;
+            0.0
+        };
+
+        // Reset can_trigger only when flux drops below rest threshold
+        const MIN_REST_FLUX: f32 = 10.0; // You can tweak this
+        if model.smoothed_flux < MIN_REST_FLUX {
+            model.can_trigger = true;
         }
 
-        // Spring dynamics
-        let target = BASE_RADIUS;
-        let stiffness = 0.08; // how fast it returns to target
-        let damping = 0.4; // how much velocity is absorbed
+        const MIN_POP_SEPARATION: f32 = 0.2;
+        if model.cooldown_counter <= 0.0
+            && model.can_trigger
+            && !model.pulse_active
+            && model.smoothed_flux > adaptive_threshold
+            && model.smoothed_flux > last_flux
+        {
+            model.hue = (model.hue + 0.3) % 1.0;
+            model.pulse_timer = pop_duration;
+            model.pulse_active = true;
+            model.cooldown_counter = COOLDOWN_TIME + MIN_POP_SEPARATION;
+            model.can_trigger = false;
+        }
 
-        let displacement = model.circle_radius - target;
-        model.circle_velocity -= displacement * stiffness;
-        model.circle_velocity *= 1.0 - damping;
 
-        model.circle_radius += model.circle_velocity;
-        model.circle_radius = model.circle_radius.clamp(50.0, 180.0);
+
+        if model.pulse_active {
+            model.pulse_timer = (model.pulse_timer - dt).max(0.0);
+
+            let t = 1.0 - (model.pulse_timer / pop_duration).clamp(0.0, 1.0);
+            // Quadratic ease out then in looks like a pop
+            let scale = if t < 0.5 {
+                2.0 * t
+            } else {
+                2.0 * (1.0 - t)
+            };
+
+            model.circle_radius = BASE_RADIUS + scale * (pop_peak - BASE_RADIUS);
+
+            if model.pulse_timer <= 0.0 {
+                model.pulse_active = false;
+                model.circle_radius = BASE_RADIUS;
+                model.pulse_timer = 0.0;
+            }
+        }
+
+            // println!("dt: {:.5}, cooldown: {:.5}, pulse_timer: {:.5}", dt, model.cooldown_counter, model.pulse_timer);
     }
 
     fn view(app: &App, model: &Model, frame: Frame) {
@@ -229,10 +263,10 @@ impl Model {
         let grid_width = 800.0;
         let vertical_lines = 20;
         let horizontal_lines = 30;
-
+        
         let audio_amplitude = model.circle_radius / 300.0;
         let wave_freq = 4.0;
-        let wave_amp = 40.0 * audio_amplitude;
+        let wave_amp = 50.0 * audio_amplitude;
 
         // Vertical lines (static perspective lines)
         for i in -vertical_lines..=vertical_lines {
@@ -270,18 +304,39 @@ impl Model {
             .radius(model.circle_radius)
             .color(circle_color);
 
-        draw_synthwave_sun(&draw, pt2(0.0, 150.0), model.circle_radius, model.hue);
+        let flicker_time = app.elapsed_frames() as f32 / 60.0;
+        draw_synthwave_sun(&draw, pt2(0.0, 150.0), model.circle_radius, model.hue, flicker_time);
 
         draw.to_frame(app, &frame).unwrap();
     }
 }
 
-fn draw_synthwave_sun(draw: &Draw, center: Point2, radius: f32, hue: f32) {
-    let layers = 20;
+
+fn draw_synthwave_sun(draw: &Draw, center: Point2, radius: f32, hue: f32, flicker_time: f32) {
+    let noise = Perlin::new();
+    let layers = 10;
+
+    for i in 0..3 {
+        let t = i as f32 / 3.0;
+        let alpha = 0.04 * (1.0 - t);
+        let glow_radius = radius * (1.10 + t * 0.1); // reduced from 1.5+
+        draw.ellipse()
+            .xy(center)
+            .radius(glow_radius)
+            .color(hsla(hue, 1.0, 0.6, alpha));
+    }
+
     for i in 0..layers {
         let t = i as f32 / (layers - 1) as f32;
-        let layer_radius = radius * (1.0 - t * 0.05);
-        let color = hsl(hue + t * 0.1, 1.0, 0.55 + 0.25 * t);
+
+        let flicker = noise.get([i as f64 * 0.3, flicker_time as f64 * 0.8]) as f32;
+        let flicker = flicker.clamp(-1.0, 1.0);
+
+        let radius_variation = 0.3 * flicker; // subtle
+        let layer_radius = radius * (1.0 - t * 0.05) + radius_variation;
+        let brightness = (0.55 + 0.2 * t + flicker * 0.02).clamp(0.0, 1.0);
+        let color = hsl((hue + t * 0.08) % 1.0, 1.0, brightness);
+
         draw.ellipse().xy(center).radius(layer_radius).color(color);
     }
 }
