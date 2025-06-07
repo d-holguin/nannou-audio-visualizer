@@ -6,14 +6,16 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
+name = "audio_visualizer_core"
 path = "src/lib.rs"
 
 [[bin]]
 path = "src/main.rs"
-name = "audio-visualizer"
+name = "audio_visualizer"
 
 [dependencies]
-nannou = "0.18.1"
-nannou_audio = "0.18.0"
+clap = { version = "4.5.23", features = ["derive", "color"] }
+nannou = "0.19.0"
+nannou_audio = "0.19.0"
 audrey = "0.3"
-rustfft = "6.0"
+rustfft = "6.3"

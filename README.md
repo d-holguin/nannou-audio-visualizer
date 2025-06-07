@@ -1,21 +1,20 @@
 # Rust Audio Visualizer
 
-This repository contains the source code for an audio visualizer created using the Rust programming language and the Nannou library. The visualizer processes audio input to generate visual patterns. The beat detector and spectrum analysis are simple, as this project serves as a learning experience.
+This is a real-time audio visualizer I threw together in Rust using Nannou, rustfft, and Audrey. It does basic beat detection using spectral flux and reacts to both volume and frequency.
 
-Watch the demo video below:
+You can feed it an audio file or let it run off live input.
 
-[![Rust Audio Visualizer Demo](http://img.youtube.com/vi/N5htJnpo7Zs/0.jpg)](https://youtu.be/N5htJnpo7Zs)
+I tried to make the strings respond more to string-like tones, and the synthwave sun pulse with kicks and snares.
 
-## Technologies Used
+It’s not rhythmically perfect, but the visual pulse holds up.
 
-- Rust (Programming Language)
-- Nannou (Creative Coding Framework)
-- rustfft (Fast Fourier Transform library)
-- audrey (Audio Decoding Library)
+Some audio files (like the example song) are sampled at 44100 Hz, but Nannou expects 48000 Hz by default — so playback might be slightly faster unless adjusted.
 
-## License
 
-This project is licensed under the MIT License. See the LICENSE file for more details.
+[![Rust Audio Visualizer Demo](https://img.youtube.com/vi/BI1evQ_j3Bs/0.jpg)](https://youtu.be/BI1evQ_j3Bs)
+
+
+
 
 ## Acknowledgments
 
